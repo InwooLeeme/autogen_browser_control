@@ -1,45 +1,34 @@
 import asyncio
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
 from autogen_agentchat.teams import SelectorGroupChat
+from autogen_agentchat.teams import RoundRobinGroupChat, MagenticOneGroupChat
 from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_agentchat.ui import Console
 from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+API_KEY = os.getenv("OPENAI_API_KEY")
+    
 async def main() -> None:
-    model_client = OpenAIChatCompletionClient(model="gpt-4o-2024-11-20")
-    termination = MaxMessageTermination(
-        max_messages=20) | TextMentionTermination("TERMINATE")
-    websurfer_agent = MultimodalWebSurfer(
-        name="websurfer_agent",
-        description="an agent that solves tasks by browsing the web",
-        model_client=model_client,
-        headless=False,
-    )
-    assistant_agent = AssistantAgent(
-        name="assistant_agent",
-        description="an agent that verifies and summarizes information",
-        system_message="You are a task verification assistant who is working with a web surfer agent to solve tasks. At each point, check if the task has been completed as requested by the user. If the websurfer_agent responds and the task has not yet been completed, respond with what is left to do and then say 'keep going'. If and only when the task has been completed, summarize and present a final answer that directly addresses the user task in detail and then respond with  TERMINATE."
-        "assistant", model_client=model_client)
-
-    selector_prompt = """You are the cordinator of role play game. The following roles are available:
-    {roles}. Given a task, the websurfer_agent will be tasked to address it by browsing the web and providing information.  The assistant_agent will be tasked with verifying the information provided by the websurfer_agent and summarizing the information to present a final answer to the user. 
-    If the task  needs assistance from a human user (e.g., providing feedback, preferences, or the task is stalled), you should select the user_proxy role to provide the necessary information.
-
-    Read the following conversation. Then select the next role from {participants} to play. Only return the role.
-
-    {history}
-
-    Read the above conversation. Then select the next role from {participants} to play. Only return the role.
-    """
-    user_proxy = UserProxyAgent(name="user_proxy", description="a human user that should be consulted only when the assistant_agent is unable to verify the information provided by the websurfer_agent")
-    team = SelectorGroupChat(
-        [websurfer_agent, assistant_agent, user_proxy],
-        selector_prompt=selector_prompt,
-        model_client=OpenAIChatCompletionClient(model="gpt-4o-mini"), termination_condition=termination)
-
-    await Console(team.run_stream(task="turn on YouTube"))
-
-    await websurfer_agent.close()
+    model_client = OpenAIChatCompletionClient(model="gpt-4o", api_key = API_KEY)
+    # The web surfer will open a Chromium browser window to perform web browsing tasks.
+    web_surfer = MultimodalWebSurfer("web_surfer", model_client, description="""A helpful assistant with access to a web browser.
+    Ask them to perform web searches, open pages, and interact with content (e.g., clicking links, scrolling the viewport, filling in form fields, etc.).
+    It can also be asked to sleep and wait for pages to load, in cases where the page seems not yet fully loaded.""", headless=False,start_page="https://www.naver.com/",
+        browser_channel="chrome", to_save_screenshots=False)
+    # The user proxy agent is used to get user input after each step of the web surfer.
+    # NOTE: you can skip input by pressing Enter.
+    user_proxy = UserProxyAgent("user_proxy")
+    # The termination condition is set to end the conversation when the user types 'exit'.
+    termination = TextMentionTermination("exit", sources=["user_proxy"])
+    # Web surfer and user proxy take turns in a round-robin fashion.
+    team = MagenticOneGroupChat([web_surfer], termination_condition=termination, model_client=model_client)
+    # Start the team and wait for it to terminate.
+    await Console(team.run_stream(task="유튜브에서 카페음악을 검색하고 3번째 영상을 틀어줘"))
+    await web_surfer.close()
 
 asyncio.run(main())
